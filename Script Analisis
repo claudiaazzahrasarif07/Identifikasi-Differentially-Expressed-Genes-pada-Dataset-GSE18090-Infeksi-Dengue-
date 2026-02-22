@@ -1,0 +1,164 @@
+#################################################
+# ANALISIS DIFFERENTIAL EXPRESSION GSE18090
+#################################################
+
+# =========================
+# 1. Load Packages
+# =========================
+
+library(GEOquery)
+library(limma)
+library(umap)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pheatmap)
+library(ggplot2)
+
+# =========================
+# 2. Download Dataset
+# =========================
+
+gset <- getGEO("GSE18090", GSEMatrix = TRUE)
+gset <- gset[[1]]
+
+# Expression matrix
+ex <- exprs(gset)
+
+# =========================
+# 3. Log2 Transform (if needed)
+# =========================
+
+qx <- as.numeric(quantile(ex, c(0.,0.25,0.5,0.75,0.99,1.0), na.rm=TRUE))
+LogC <- (qx[5] > 100) ||
+        (qx[6]-qx[1] > 50 && qx[2] > 0)
+
+if (LogC) {
+  ex[which(ex <= 0)] <- NaN
+  ex <- log2(ex)
+}
+
+# =========================
+# 4. Group Definition
+# =========================
+
+gsms <- "00000000000000000011111111"
+sml <- strsplit(gsms, split="")[[1]]
+group <- factor(sml)
+
+design <- model.matrix(~ group)
+colnames(design) <- c("Control","Dengue")
+
+# =========================
+# 5. LIMMA ANALYSIS
+# =========================
+
+fit <- lmFit(ex, design)
+fit <- eBayes(fit)
+
+tT <- topTable(fit, coef=2, number=Inf, adjust="BH")
+
+# Save top table
+write.table(tT, file="topTable_results.tsv",
+            sep="\t", quote=FALSE, row.names=TRUE)
+
+# =========================
+# 6. QUALITY CONTROL PLOTS
+# =========================
+
+png("boxplot.png", width=800, height=600)
+boxplot(ex, outline=FALSE, main="Boxplot Expression")
+dev.off()
+
+png("density_plot.png", width=800, height=600)
+plotDensities(ex, main="Density Plot")
+dev.off()
+
+png("MA_plot.png", width=800, height=600)
+plotMD(fit, column=2)
+abline(h=0, col="blue")
+dev.off()
+
+# =========================
+# 7. VOLCANO PLOT
+# =========================
+
+tT$threshold <- as.factor(tT$adj.P.Val < 0.05)
+
+png("volcano_plot.png", width=800, height=600)
+ggplot(tT, aes(x=logFC, y=-log10(P.Value), color=threshold)) +
+  geom_point(alpha=0.6) +
+  theme_minimal() +
+  ggtitle("Volcano Plot")
+dev.off()
+
+# =========================
+# 8. VENN (Jumlah DEG)
+# =========================
+
+deg <- tT[tT$adj.P.Val < 0.05,]
+write.table(deg, file="DEG_significant.tsv",
+            sep="\t", quote=FALSE, row.names=TRUE)
+
+# =========================
+# 9. HEATMAP TOP 50 DEGs
+# =========================
+
+top50 <- rownames(tT)[1:50]
+heat_data <- ex[top50,]
+
+png("heatmap_top50.png", width=800, height=800)
+pheatmap(heat_data, scale="row",
+         show_rownames=FALSE,
+         annotation_col=data.frame(Group=group))
+dev.off()
+
+# =========================
+# 10. UMAP
+# =========================
+
+ump <- umap(t(ex))
+
+png("UMAP_plot.png", width=800, height=600)
+plot(ump$layout,
+     col=as.numeric(group),
+     pch=19,
+     main="UMAP Plot")
+legend("topright", legend=levels(group),
+       col=1:2, pch=19)
+dev.off()
+
+# =========================
+# 11. ENRICHMENT ANALYSIS
+# =========================
+
+# Convert gene symbols to ENTREZ
+gene_symbols <- rownames(deg)
+
+gene_entrez <- bitr(gene_symbols,
+                    fromType="SYMBOL",
+                    toType="ENTREZID",
+                    OrgDb=org.Hs.eg.db)
+
+# GO
+ego <- enrichGO(gene=gene_entrez$ENTREZID,
+                OrgDb=org.Hs.eg.db,
+                ont="BP",
+                pAdjustMethod="BH",
+                pvalueCutoff=0.05)
+
+png("GO_dotplot.png", width=800, height=600)
+dotplot(ego)
+dev.off()
+
+# KEGG
+ekegg <- enrichKEGG(gene=gene_entrez$ENTREZID,
+                    organism="hsa",
+                    pvalueCutoff=0.05)
+
+png("KEGG_dotplot.png", width=800, height=600)
+dotplot(ekegg)
+dev.off()
+
+#################################################
+# END OF SCRIPT
+#################################################
